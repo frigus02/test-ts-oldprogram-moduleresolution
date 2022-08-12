@@ -1,32 +1,9 @@
 const fs = require('fs');
-const path = require('path');
 const ts = require('typescript');
 
 const STANDARD_TYPINGS = [
   '/node_modules/typescript/lib/lib.es5.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.collection.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.core.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.promise.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.iterable.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.generator.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.symbol.d.ts',
-  '/node_modules/typescript/lib/lib.es2015.reflect.d.ts',
-  '/node_modules/typescript/lib/lib.es2016.array.include.d.ts',
-  '/node_modules/typescript/lib/lib.es2017.object.d.ts',
-  '/node_modules/typescript/lib/lib.es2017.string.d.ts',
-  '/node_modules/typescript/lib/lib.es2018.asyncgenerator.d.ts',
-  '/node_modules/typescript/lib/lib.es2018.asynciterable.d.ts',
-  '/node_modules/typescript/lib/lib.es2018.promise.d.ts',
-  '/node_modules/typescript/lib/lib.es2019.array.d.ts',
-  '/node_modules/typescript/lib/lib.es2019.object.d.ts',
-  '/node_modules/typescript/lib/lib.es2019.string.d.ts',
-  '/node_modules/typescript/lib/lib.es2019.symbol.d.ts',
-  '/node_modules/typescript/lib/lib.es2020.promise.d.ts',
-  '/node_modules/typescript/lib/lib.es2020.string.d.ts',
-  '/node_modules/typescript/lib/lib.es2021.promise.d.ts',
-  '/node_modules/typescript/lib/lib.es2021.string.d.ts',
   '/node_modules/typescript/lib/lib.dom.d.ts',
-  '/node_modules/typescript/lib/lib.dom.iterable.d.ts',
 ];
 
 const FILES = {
@@ -46,56 +23,21 @@ function exceptKey(obj, keyToRemove) {
 
 const ROOT_FILE_NAMES =
     Object.keys(FILES).filter(key => key !== '/module/b.d.ts');
-const ROUNDS = [
-  {files: FILES},
-  {files: exceptKey(FILES, '/module/b.d.ts')},
-  {files: FILES},
-];
 
 const COMPILER_OPTIONS = {
-  'allowUnreachableCode': false,
-  'baseUrl': '/',
-  'declaration': true,
-  'downlevelIteration': true,
-  'emitDecoratorMetadata': true,
-  'experimentalDecorators': true,
-  'importHelpers': true,
-  'inlineSourceMap': true,
-  'inlineSources': true,
   'module': ts.ModuleKind.CommonJS,
   'moduleResolution': ts.ModuleResolutionKind.NodeJs,
-  'noEmitOnError': false,
-  'noErrorTruncation': false,
-  'noFallthroughCasesInSwitch': true,
-  'noImplicitAny': true,
-  'noImplicitOverride': true,
-  'noImplicitReturns': true,
-  'noImplicitThis': true,
   'noLib': true,
-  'noPropertyAccessFromIndexSignature': true,
   'outDir': `${__dirname}/out`,
-  'preserveConstEnums': false,
-  'rootDir': '/',
-  'rootDirs': ['/'],
-  'skipDefaultLibCheck': true,
-  'sourceMap': false,
-  'strictBindCallApply': true,
-  'strictFunctionTypes': true,
-  'strictNullChecks': true,
-  'strictPropertyInitialization': true,
-  'stripInternal': true,
+  'strict': true,
   'target': ts.ScriptTarget.ES2020,
-  'types': [],
-  'useUnknownInCatchVariables': true
 };
 
 const FORMAT_DIAGNOSTICS_HOST = {
   getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
+  getCanonicalFileName: f => f,
   getNewLine: () => ts.sys.newLine,
-  getCanonicalFileName: f => f
 };
-
-const EMPTY_FILE_PATH = '/empty.d.ts';
 
 class CompilerHostWithFileCache {
   constructor(delegate, files) {
@@ -103,13 +45,8 @@ class CompilerHostWithFileCache {
     this.files = files;
   }
 
-  // ts.CompilerHost
   getSourceFile(
       fileName, languageVersionOrOptions, _onError, shouldCreateNewSourceFile) {
-    if (fileName === EMPTY_FILE_PATH) {
-      return ts.createSourceFile(fileName, '', languageVersionOrOptions);
-    }
-
     if (!this.fileExists(fileName)) {
       return undefined;
     }
@@ -123,57 +60,49 @@ class CompilerHostWithFileCache {
     CACHE.set(fileName, sourceFile);
     return sourceFile;
   }
+
   getDefaultLibFileName(options) {
     return this.delegate.getDefaultLibFileName(options);
   }
-  getDefaultLibLocation() {
-    return path.dirname(
-        this.getDefaultLibFileName({target: ts.ScriptTarget.ES5}));
+
+  writeFile(fileName, text, writeByteOrderMark, onError, sourceFiles, data) {
+    this.delegate.writeFile(
+        fileName, text, writeByteOrderMark, onError, sourceFiles, data);
   }
-  writeFile(fileName, text, writeByteOrderMark, onError, sourceFiles, _data) {
-    if (!fs.existsSync(fileName) ||
-        fs.readFileSync(fileName, 'utf-8') !== text) {
-      this.delegate.writeFile(
-          fileName, text, writeByteOrderMark, onError, sourceFiles);
-    }
-  }
+
   getCurrentDirectory() {
     return this.delegate.getCurrentDirectory();
   }
+
   getCanonicalFileName(path) {
     return this.delegate.getCanonicalFileName(path);
   }
+
   useCaseSensitiveFileNames() {
     return this.delegate.useCaseSensitiveFileNames();
   }
+
   getNewLine() {
     return this.delegate.getNewLine();
   }
-  resolveTypeReferenceDirectives(typeReferenceDirectiveNames) {
-    return typeReferenceDirectiveNames.map(() => ({
-                                             primary: true,
-                                             resolvedFileName: EMPTY_FILE_PATH,
-                                           }));
-  }
 
-  // ts.ModuleResolutionHost
   fileExists(fileName) {
     return fileName in this.files;
   }
+
   readFile(fileName) {
     return this.delegate.readFile(fileName);
   }
-  trace(s) {
-    console.error(s);
-  }
-  realpath(path) {
-    return path;
-  }
-  getDirectories(path) {
-    return this.delegate.getDirectories ? this.delegate.getDirectories(path) :
-                                          [];
-  }
 }
+
+const ROUNDS = [
+  // Initial successful build
+  {files: FILES},
+  // Emulate file b.d.ts being deleted --> should error
+  {files: exceptKey(FILES, '/module/b.d.ts')},
+  // Emulate file b.d.ts being restored --> should succeed but errors
+  {files: FILES},
+];
 
 let oldProgram;
 for (const [i, round] of ROUNDS.entries()) {
