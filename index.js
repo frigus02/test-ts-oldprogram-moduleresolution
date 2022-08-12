@@ -64,6 +64,11 @@ class CompilerHostWithFileCache {
     return sourceFile;
   }
 
+  // Implementing hasInvalidatedResolution as below fixes the issue
+  //hasInvalidatedResolution() {
+  //  return true;
+  //}
+
   getDefaultLibFileName(options) {
     return this.delegate.getDefaultLibFileName(options);
   }
@@ -127,11 +132,8 @@ for (const [i, round] of ROUNDS.entries()) {
   ];
   for (const sf of mainSourceFiles) {
     diagnostics.push(...program.getSyntacticDiagnostics(sf));
+    // Commenting out getSemanticDiagnostics fixes the issue
     diagnostics.push(...program.getSemanticDiagnostics(sf));
-  }
-  if (diagnostics.length > 0) {
-    console.log(ts.formatDiagnostics(diagnostics, FORMAT_DIAGNOSTICS_HOST));
-    continue;
   }
   for (const sf of mainSourceFiles) {
     diagnostics.push(...program.emit(sf).diagnostics);
