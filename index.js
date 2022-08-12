@@ -61,13 +61,15 @@ class CompilerHostWithFileCache {
 
     const sourceFile = ts.createSourceFile(
         fileName, this.files[fileName], languageVersionOrOptions);
+    // Wrapping CACHE.set with if(fileName.endsWith('.d.ts')) fixes the issue
     CACHE.set(fileName, sourceFile);
+
     return sourceFile;
   }
 
   // Implementing hasInvalidatedResolution as below fixes the issue
-  // hasInvalidatedResolution() {
-  //  return true;
+  // hasInvalidatedResolution(path) {
+  //  return !path.endsWith('.d.ts');
   //}
 
   getDefaultLibFileName(options) {
