@@ -55,6 +55,7 @@ class CompilerHostWithFileCache {
     }
 
     if (CACHE.has(fileName) && !shouldCreateNewSourceFile) {
+      // Commenting out the next line (get file from cache) fixes the issue
       return CACHE.get(fileName);
     }
 
@@ -65,7 +66,7 @@ class CompilerHostWithFileCache {
   }
 
   // Implementing hasInvalidatedResolution as below fixes the issue
-  //hasInvalidatedResolution() {
+  // hasInvalidatedResolution() {
   //  return true;
   //}
 
