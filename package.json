@@ -1,0 +1,14 @@
+{
+  "name": "test-ts-oldprogram-moduleresolution",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Jan Kuehle <jankuehle@google.com>",
+  "license": "ISC",
+  "dependencies": {
+    "typescript": "4.7.4"
+  }
+}
