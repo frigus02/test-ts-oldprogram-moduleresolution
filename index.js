@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const fs = require('fs');
+const path = require('path');
 const ts = require('typescript');
 
 const STANDARD_TYPINGS = [
@@ -17,8 +18,6 @@ for (const file of STANDARD_TYPINGS) {
   FILES[file] = fs.readFileSync('.' + file, 'utf8');
 }
 
-const CACHE = new Map();
-
 function exceptKey(obj, keyToRemove) {
   return Object.fromEntries(
       Object.entries(obj).filter(([key]) => key !== keyToRemove));
@@ -28,12 +27,12 @@ const ROOT_FILE_NAMES =
     Object.keys(FILES).filter(key => key !== '/module/b.d.ts');
 
 const COMPILER_OPTIONS = {
-  'module': ts.ModuleKind.CommonJS,
-  'moduleResolution': ts.ModuleResolutionKind.NodeJs,
-  'noLib': true,
-  'outDir': `${__dirname}/out`,
-  'strict': true,
-  'target': ts.ScriptTarget.ES2020,
+  module: ts.ModuleKind.CommonJS,
+  moduleResolution: ts.ModuleResolutionKind.NodeJs,
+  noLib: true,
+  outDir: `${__dirname}/out`,
+  strict: true,
+  target: ts.ScriptTarget.ES2020,
 };
 
 const FORMAT_DIAGNOSTICS_HOST = {
@@ -42,68 +41,102 @@ const FORMAT_DIAGNOSTICS_HOST = {
   getNewLine: () => ts.sys.newLine,
 };
 
-class CompilerHostWithFileCache {
-  constructor(delegate, files) {
-    this.delegate = delegate;
-    this.files = files;
+function patchWatchFunctions(host, files) {
+  const fileWatchers = new Map();
+  const directoryWatchers = new Map();
+
+  function callWatchers(fileName, eventKind) {
+    const fileWatcher = fileWatchers.get(fileName);
+    fileWatcher?.callback(fileName, eventKind);
+
+    let dirName = path.dirname(fileName);
+    let directoryWatcher = directoryWatchers.get(dirName);
+    directoryWatcher?.callback(fileName);
+    while (dirName !== '.' && dirName !== '/') {
+      dirName = path.dirname(dirName);
+      directoryWatcher = directoryWatchers.get(dirName);
+      if (directoryWatcher?.recursive) {
+        directoryWatcher.callback(fileName);
+      }
+    }
   }
 
-  getSourceFile(
-      fileName, languageVersionOrOptions, _onError, shouldCreateNewSourceFile) {
-    if (!this.fileExists(fileName)) {
-      return undefined;
+  host.updateFiles = (newFiles) => {
+    for (const fileName of Object.keys(files)) {
+      if (!(fileName in newFiles)) {
+        callWatchers(fileName, ts.FileWatcherEventKind.Deleted);
+      }
     }
 
-    if (CACHE.has(fileName) && !shouldCreateNewSourceFile) {
-      // Commenting out the next line (get file from cache) fixes the issue
-      return CACHE.get(fileName);
+    for (const fileName of Object.keys(newFiles)) {
+      if (!(fileName in files)) {
+        callWatchers(fileName, ts.FileWatcherEventKind.Created);
+      }
     }
 
-    const sourceFile = ts.createSourceFile(
-        fileName, this.files[fileName], languageVersionOrOptions);
-    // Wrapping CACHE.set with if(fileName.endsWith('.d.ts')) fixes the issue
-    CACHE.set(fileName, sourceFile);
+    files = newFiles;
+  };
 
-    return sourceFile;
-  }
+  host.watchFile = (path, callback) => {
+    console.log('watchFile', path);
+    if (fileWatchers.has(path)) {
+      throw new Error(`Path ${path} already has a file watcher`);
+    }
 
-  // Implementing hasInvalidatedResolution as below fixes the issue
-  // hasInvalidatedResolution(path) {
-  //  return !path.endsWith('.d.ts');
-  //}
+    const watcher = {
+      callback: (fileName, eventKind) => {
+        console.log(
+            'fileChangeCallback', fileName, ts.FileWatcherEventKind[eventKind]);
+        callback(fileName);
+      }
+    };
+    fileWatchers.set(path, watcher);
+    return {
+      close: () => {
+        console.log('watchFile', path, 'closed');
+        if (fileWatchers.get(path) === watcher) {
+          fileWatchers.delete(path);
+        }
+      }
+    };
+  };
 
-  getDefaultLibFileName(options) {
-    return this.delegate.getDefaultLibFileName(options);
-  }
+  host.watchDirectory = (path, callback, recursive) => {
+    console.log('watchDirectory', path, recursive);
+    if (directoryWatchers.has(path)) {
+      throw new Error(`Path ${path} already has a directory watcher`);
+    }
 
-  writeFile(fileName, text, writeByteOrderMark, onError, sourceFiles, data) {
-    this.delegate.writeFile(
-        fileName, text, writeByteOrderMark, onError, sourceFiles, data);
-  }
+    const watcher = {
+      callback: (fileName) => {
+        console.log('directoryChangeCallback', fileName);
+        callback(fileName);
+      },
+      recursive
+    };
+    directoryWatchers.set(path, watcher);
+    return {
+      close: () => {
+        console.log('watchDirectory', path, 'closed');
+        if (directoryWatchers.get(path) === watcher) {
+          directoryWatchers.delete(path);
+        }
+      }
+    };
+  };
 
-  getCurrentDirectory() {
-    return this.delegate.getCurrentDirectory();
-  }
+  host.fileExists = (fileName) => {
+    return fileName in files;
+  };
 
-  getCanonicalFileName(path) {
-    return this.delegate.getCanonicalFileName(path);
-  }
+  host.readFile = (fileName) => {
+    return files[fileName];
+  };
 
-  useCaseSensitiveFileNames() {
-    return this.delegate.useCaseSensitiveFileNames();
-  }
-
-  getNewLine() {
-    return this.delegate.getNewLine();
-  }
-
-  fileExists(fileName) {
-    return fileName in this.files;
-  }
-
-  readFile(fileName) {
-    return this.delegate.readFile(fileName);
-  }
+  host.directoryExists = undefined;
+  host.getDirectories = undefined;
+  host.readDirectory = undefined;
+  host.realpath = undefined;
 }
 
 const ROUNDS = [
@@ -115,15 +148,40 @@ const ROUNDS = [
   {files: FILES},
 ];
 
-let oldProgram;
+function diagnosticReporter(diagnostic) {
+  console.log(
+      '[diagnosticReporter]',
+      ts.formatDiagnostic(diagnostic, FORMAT_DIAGNOSTICS_HOST));
+}
+
+function watchStatusReporter(diagnostic, _newLine, _options, _errorCount) {
+  console.log(
+      '[watchStatusReporter]',
+      ts.formatDiagnostic(diagnostic, FORMAT_DIAGNOSTICS_HOST));
+}
+
+let compilerHost;
+let watch;
 for (const [i, round] of ROUNDS.entries()) {
   console.log(`ROUND ${i} START`);
+  if (!compilerHost || !watch) {
+    compilerHost = ts.createWatchCompilerHost(
+        ROOT_FILE_NAMES, COMPILER_OPTIONS, ts.sys,
+        // We handle emit outselves. So
+        // createEmitAndSemanticDiagnosticsBuilderProgram is not desirable.
+        ts.createSemanticDiagnosticsBuilderProgram, diagnosticReporter,
+        watchStatusReporter);
+    patchWatchFunctions(compilerHost, round.files);
+    watch = ts.createWatchProgram(compilerHost);
+  } else {
+    // In a real world implementation we'd have to check if compilerOptions have
+    // changed and re-create the watch host and program here.
+    compilerHost.updateFiles(round.files);
+    watch.updateRootFileNames(ROOT_FILE_NAMES);
+  }
 
-  const compilerHost = new CompilerHostWithFileCache(
-      ts.createCompilerHost(COMPILER_OPTIONS), round.files);
-  const program = ts.createProgram(
-      ROOT_FILE_NAMES, COMPILER_OPTIONS, compilerHost, oldProgram);
-  oldProgram = program;
+  const program = watch.getProgram();
+
   const mainFileNames =
       ROOT_FILE_NAMES.filter(fileName => !fileName.startsWith('/node_modules'))
   const mainSourceFiles = program.getSourceFiles().filter(
@@ -134,8 +192,8 @@ for (const [i, round] of ROUNDS.entries()) {
     ...program.getGlobalDiagnostics(),
   ];
   for (const sf of mainSourceFiles) {
+    console.log('asking for diagnostics for', sf.fileName);
     diagnostics.push(...program.getSyntacticDiagnostics(sf));
-    // Commenting out getSemanticDiagnostics fixes the issue
     diagnostics.push(...program.getSemanticDiagnostics(sf));
   }
   for (const sf of mainSourceFiles) {
@@ -145,3 +203,5 @@ for (const [i, round] of ROUNDS.entries()) {
     console.log(ts.formatDiagnostics(diagnostics, FORMAT_DIAGNOSTICS_HOST));
   }
 }
+
+watch?.close();
