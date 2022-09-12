@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const fs = require('fs');
+const {resolveTypeReferenceDirective} = require('typescript');
 const ts = require('typescript');
 
 const STANDARD_TYPINGS = [
@@ -23,6 +24,8 @@ for (const file of STANDARD_TYPINGS) {
 }
 
 const SOURCE_FILE_CACHE = new Map();
+const SOURCE_FILE_REG =
+    ts.createDocumentRegistry(/* useCaseSensitiveFileNames */ true);
 const PROGRAM_CACHE = new Map();
 
 function exceptKey(obj, keyToRemove) {
@@ -46,9 +49,14 @@ const FORMAT_DIAGNOSTICS_HOST = {
 };
 
 class CompilerHostWithFileCache {
-  constructor(delegate, files) {
+  constructor(delegate, files, options) {
     this.delegate = delegate;
     this.files = files;
+    this.options = options;
+  }
+
+  getCompilationSettings() {
+    return this.options;
   }
 
   getSourceFile(
@@ -57,13 +65,26 @@ class CompilerHostWithFileCache {
       return undefined;
     }
 
-    if (SOURCE_FILE_CACHE.has(fileName) && !shouldCreateNewSourceFile) {
-      return SOURCE_FILE_CACHE.get(fileName);
+    const key = fileName + '|' +
+        SOURCE_FILE_REG.getKeyForCompilationSettings(
+            this.getCompilationSettings());
+
+    if (SOURCE_FILE_CACHE.has(key)) {
+      if (shouldCreateNewSourceFile) {
+        const newSourceFile = SOURCE_FILE_REG.updateDocument(
+            fileName, this, ts.ScriptSnapshot.fromString(this.files[fileName]),
+            '1');
+        SOURCE_FILE_CACHE.set(key, newSourceFile);
+        return newSourceFile;
+      }
+
+      return SOURCE_FILE_CACHE.get(key);
     }
 
-    const sourceFile = ts.createSourceFile(
-        fileName, this.files[fileName], languageVersionOrOptions);
-    SOURCE_FILE_CACHE.set(fileName, sourceFile);
+    const sourceFile = SOURCE_FILE_REG.acquireDocument(
+        fileName, this, ts.ScriptSnapshot.fromString(this.files[fileName]),
+        '1');
+    SOURCE_FILE_CACHE.set(key, sourceFile);
 
     return sourceFile;
   }
@@ -130,7 +151,7 @@ for (const [i, round] of ROUNDS.entries()) {
   console.log(`ROUND ${i} START`);
 
   const compilerHost = new CompilerHostWithFileCache(
-      ts.createCompilerHost(COMPILER_OPTIONS), round.files);
+      ts.createCompilerHost(COMPILER_OPTIONS), round.files, COMPILER_OPTIONS);
   const oldProgram = PROGRAM_CACHE.get(round.programKey);
   const program = ts.createProgram(
       round.rootFileNames, COMPILER_OPTIONS, compilerHost, oldProgram);
