@@ -10,22 +10,25 @@ const STANDARD_TYPINGS = [
 ];
 
 const FILES = {
-  '/a.ts': 'import * as b from "./module/b";\n\nconsole.log(b.GLOBAL_VAR);\n',
-  '/module/b.d.ts': 'export const GLOBAL_VAR = "StringValueFromB";\n',
+  '/a.ts':
+      'import * as lib from "./m/lib";\n\nconsole.log(lib.GLOBAL_VAR.toLowerCase());\n',
+  '/b.ts':
+      'import * as lib from "./m/lib";\n\nconsole.log(lib.GLOBAL_VAR.toLowerCase());\n',
+  '/m/lib.d.ts': 'export {GLOBAL_VAR} from "./transitive_lib";\n',
+  '/m/transitive_lib.d.ts': 'export const GLOBAL_VAR = 1.1;\n',
+  '/m/transitive_lib/index.d.ts': 'export const GLOBAL_VAR = "hello";\n',
 };
 for (const file of STANDARD_TYPINGS) {
   FILES[file] = fs.readFileSync('.' + file, 'utf8');
 }
 
-const CACHE = new Map();
+const SOURCE_FILE_CACHE = new Map();
+const PROGRAM_CACHE = new Map();
 
 function exceptKey(obj, keyToRemove) {
   return Object.fromEntries(
       Object.entries(obj).filter(([key]) => key !== keyToRemove));
 }
-
-const ROOT_FILE_NAMES =
-    Object.keys(FILES).filter(key => key !== '/module/b.d.ts');
 
 const COMPILER_OPTIONS = {
   'module': ts.ModuleKind.CommonJS,
@@ -54,23 +57,16 @@ class CompilerHostWithFileCache {
       return undefined;
     }
 
-    if (CACHE.has(fileName) && !shouldCreateNewSourceFile) {
-      // Commenting out the next line (get file from cache) fixes the issue
-      return CACHE.get(fileName);
+    if (SOURCE_FILE_CACHE.has(fileName) && !shouldCreateNewSourceFile) {
+      return SOURCE_FILE_CACHE.get(fileName);
     }
 
     const sourceFile = ts.createSourceFile(
         fileName, this.files[fileName], languageVersionOrOptions);
-    // Wrapping CACHE.set with if(fileName.endsWith('.d.ts')) fixes the issue
-    CACHE.set(fileName, sourceFile);
+    SOURCE_FILE_CACHE.set(fileName, sourceFile);
 
     return sourceFile;
   }
-
-  // Implementing hasInvalidatedResolution as below fixes the issue
-  // hasInvalidatedResolution(path) {
-  //  return !path.endsWith('.d.ts');
-  //}
 
   getDefaultLibFileName(options) {
     return this.delegate.getDefaultLibFileName(options);
@@ -82,19 +78,19 @@ class CompilerHostWithFileCache {
   }
 
   getCurrentDirectory() {
-    return this.delegate.getCurrentDirectory();
+    return '/';
   }
 
   getCanonicalFileName(path) {
-    return this.delegate.getCanonicalFileName(path);
+    return path;
   }
 
   useCaseSensitiveFileNames() {
-    return this.delegate.useCaseSensitiveFileNames();
+    return true;
   }
 
   getNewLine() {
-    return this.delegate.getNewLine();
+    return '\n';
   }
 
   fileExists(fileName) {
@@ -102,32 +98,46 @@ class CompilerHostWithFileCache {
   }
 
   readFile(fileName) {
-    return this.delegate.readFile(fileName);
+    return this.files[fileName];
   }
 }
 
 const ROUNDS = [
-  // Initial successful build
-  {files: FILES},
-  // Emulate file b.d.ts being deleted --> should error
-  {files: exceptKey(FILES, '/module/b.d.ts')},
-  // Emulate file b.d.ts being restored --> should succeed but errors
-  {files: FILES},
+  // Fails: A uses transitive_lib.d.ts, which exports a number, which doesn't
+  // have a toLowerCase() method.
+  {
+    programKey: 'A',
+    files: FILES,
+    rootFileNames: [...STANDARD_TYPINGS, '/a.ts'],
+  },
+  // Works: B doesn't have transitive_lib.d.ts, so it loads
+  // transitive_lib/index.d.ts, which exports a string, which does have a
+  // toLowerCase() method.
+  {
+    programKey: 'B',
+    files: exceptKey(FILES, '/m/transitive_lib.d.ts'),
+    rootFileNames: [...STANDARD_TYPINGS, '/b.ts'],
+  },
+  // Should fail but works
+  {
+    programKey: 'A',
+    files: FILES,
+    rootFileNames: [...STANDARD_TYPINGS, '/a.ts'],
+  },
 ];
 
-let oldProgram;
 for (const [i, round] of ROUNDS.entries()) {
   console.log(`ROUND ${i} START`);
 
   const compilerHost = new CompilerHostWithFileCache(
       ts.createCompilerHost(COMPILER_OPTIONS), round.files);
+  const oldProgram = PROGRAM_CACHE.get(round.programKey);
   const program = ts.createProgram(
-      ROOT_FILE_NAMES, COMPILER_OPTIONS, compilerHost, oldProgram);
-  oldProgram = program;
-  const mainFileNames =
-      ROOT_FILE_NAMES.filter(fileName => !fileName.startsWith('/node_modules'))
+      round.rootFileNames, COMPILER_OPTIONS, compilerHost, oldProgram);
+  PROGRAM_CACHE.set(round.programKey, program);
   const mainSourceFiles = program.getSourceFiles().filter(
-      sf => mainFileNames.includes(sf.fileName));
+      sf => round.rootFileNames.includes(sf.fileName) &&
+          !STANDARD_TYPINGS.includes(sf.fileName));
 
   const diagnostics = [
     ...program.getOptionsDiagnostics(),
@@ -135,10 +145,7 @@ for (const [i, round] of ROUNDS.entries()) {
   ];
   for (const sf of mainSourceFiles) {
     diagnostics.push(...program.getSyntacticDiagnostics(sf));
-    // Commenting out getSemanticDiagnostics fixes the issue
     diagnostics.push(...program.getSemanticDiagnostics(sf));
-  }
-  for (const sf of mainSourceFiles) {
     diagnostics.push(...program.emit(sf).diagnostics);
   }
   if (diagnostics.length > 0) {
